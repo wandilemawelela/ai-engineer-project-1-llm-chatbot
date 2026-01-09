@@ -14,8 +14,7 @@ load_dotenv()
 
 def truncate_history_if_needed(messages, model_name):
     """
-    Truncate conversation history while preserving the system prompt
-    at index 0. Removes oldest user/assistant pairs starting from index 1.
+    Truncate oldest user/assistant pairs while preserving the system prompt.
     """
     while True:
         estimated_input_tokens = count_tokens(messages, model_name)
@@ -27,25 +26,24 @@ def truncate_history_if_needed(messages, model_name):
         if len(messages) <= 1:
             break
 
-        # If history is malformed after system prompt, remove one message at a time
-        if messages[1].get("role") == "assistant":
+        # Handle malformed history safely
+        if messages[1].get("role") != "user":
             messages.pop(1)
             print("[context] Truncated malformed message to restore order.")
             continue
 
-        removed_any = False
+        # Remove oldest user + assistant pair
+        removed = False
 
-        # Remove oldest user message (index 1)
         if len(messages) > 1:
             messages.pop(1)
-            removed_any = True
+            removed = True
 
-        # Remove corresponding assistant message if present
         if len(messages) > 1 and messages[1].get("role") == "assistant":
             messages.pop(1)
-            removed_any = True
+            removed = True
 
-        if removed_any:
+        if removed:
             print("[context] Truncated oldest messages to fit token budget.")
         else:
             break
@@ -55,21 +53,35 @@ def main():
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     model_name = "gemini-2.5-flash"
 
-    # Initialize messages with system prompt
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    cot_enabled = False
 
     print("System prompt loaded. Type /quit to exit.")
 
     while True:
         try:
-            user_input = input("You: ")
+            user_input = input("You: ").strip()
 
-            if not user_input.strip():
+            if not user_input:
                 continue
 
-            if user_input.strip().lower() in {"quit", "exit", "/quit"}:
+            # Exit commands
+            if user_input.lower() in {"quit", "exit", "/quit"}:
                 print("Goodbye!")
                 break
+
+            # CoT toggle command
+            if user_input.lower() == "/cot":
+                cot_enabled = True
+                print("[mode] CoT enabled for next turn.")
+                continue
+
+            # Apply CoT instruction once
+            if cot_enabled:
+                user_input = (
+                    "Explain your reasoning step-by-step, then give the final answer.\n\n"
+                    + user_input
+                )
 
             messages.append({"role": "user", "content": user_input})
 
@@ -80,7 +92,7 @@ def main():
 
             contents = [
                 genai.types.Content(
-                    role="user" if msg["role"] in {"user", "system"} else "model",
+                    role="user" if msg["role"] == "user" else "model",
                     parts=[genai.types.Part(text=msg["content"])]
                 )
                 for msg in messages
@@ -95,6 +107,11 @@ def main():
             print(f"Assistant: {assistant_text}")
 
             messages.append({"role": "assistant", "content": assistant_text})
+
+            # Disable CoT after one use
+            if cot_enabled:
+                cot_enabled = False
+                print("[mode] CoT disabled.")
 
         except KeyboardInterrupt:
             print("\nGoodbye!")
